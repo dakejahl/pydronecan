@@ -127,6 +127,16 @@ class TransferErrorHandling(unittest.TestCase):
         with self.assertRaises(transport.TransferError):
             node.spin(0)
 
+    def test_multi_frame_without_crc_raises_transfer_error(self):
+        can_id = (DEFAULT_TRANSFER_PRIORITY << 24) | (dronecan.uavcan.protocol.NodeStatus.default_dtid << 8) | 42
+        self.driver.receive.side_effect = [CANFrame(can_id=can_id, data=bytearray([0x80]), extended=True),
+                                           CANFrame(can_id=can_id, data=bytearray([0x60]), extended=True),
+                                           None]
+        node = Node(self.driver, catch_transfer_errors=False)
+
+        with self.assertRaises(transport.TransferError):
+            node.spin(0)
+
     def test_short_payload_raises_transfer_error(self):
         dtid = dronecan.uavcan.protocol.NodeStatus.default_dtid
         self.driver.receive.side_effect = [self._single_frame(dtid, b'\x01\x02'), None]

@@ -845,6 +845,9 @@ class Transfer(object):
 
         # For a multi-frame transfer, validate the CRC and frame indexes
         if len(frames) > 1:
+            if len(payload_bytes) < 2:
+                raise TransferError("Multi-frame transfer too short to hold a CRC (DTID {0:d})"
+                                    .format(self.data_type_id))
             transfer_crc = payload_bytes[0] + (payload_bytes[1] << 8)
             payload_bytes = payload_bytes[2:]
             crc = common.crc16_from_bytes(payload_bytes, initial=datatype.base_crc)
