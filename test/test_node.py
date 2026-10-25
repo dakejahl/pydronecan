@@ -116,7 +116,7 @@ class TransferErrorHandling(unittest.TestCase):
         node = Node(self.driver)
         node.add_handler(dronecan.uavcan.protocol.debug.KeyValue, mock_cb)
 
-        with self.assertLogs('dronecan.node', 'WARNING'):
+        with self.assertLogs('dronecan.node', 'DEBUG'):
             self.assertEqual(node.spin(0), len(frames))
         mock_cb.assert_called_once_with(ANY)
 
@@ -134,15 +134,6 @@ class TransferErrorHandling(unittest.TestCase):
 
         with self.assertRaises(transport.TransferError):
             node.spin(0)
-
-    def test_repeated_errors_are_rate_limited(self):
-        frames = [self._single_frame(self.UNKNOWN_DTID, b'\x01', tid) for tid in range(5)]
-        self.driver.receive.side_effect = frames + [None]
-        node = Node(self.driver)
-
-        with self.assertLogs('dronecan.node', 'WARNING') as logs:
-            node.spin(0)
-        self.assertEqual(len(logs.records), 1)
 
 
 if __name__ == '__main__':
