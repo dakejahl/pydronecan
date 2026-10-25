@@ -865,8 +865,14 @@ class Transfer(object):
             if frame.canfd:    # we are in CANFD world can't use tao
                 tao = False
                 self.canfd = True
-        # noinspection PyProtectedMember
-        self.payload._unpack(bits_from_bytes(payload_bytes), tao)
+        # A payload that doesn't fit our definition of the type (e.g. the sender uses a different DSDL revision)
+        # fails deep inside the unpacker; report it as a TransferError like every other undecodable transfer
+        try:
+            # noinspection PyProtectedMember
+            self.payload._unpack(bits_from_bytes(payload_bytes), tao)
+        except (ValueError, IndexError) as ex:
+            raise TransferError("Failed to decode {0} (DTID {1:d}): {2}".format(datatype.full_name,
+                                                                               self.data_type_id, ex))
 
     @property
     def key(self):
