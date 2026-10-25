@@ -25,6 +25,7 @@ from dronecan import UAVCANException
 DEFAULT_NODE_STATUS_INTERVAL = 1.0
 DEFAULT_SERVICE_TIMEOUT = 1.0
 DEFAULT_TRANSFER_PRIORITY = 20
+TRANSFER_ERROR_LOG_INTERVAL = 10.0
 
 
 logger = getLogger(__name__)
@@ -239,7 +240,7 @@ class TransferHookDispatcher(object):
 class Node(Scheduler):
     def __init__(self, can_driver, node_id=None, node_status_interval=None,
                  mode=None, node_info=None, catch_handler_exceptions=True,
-                 send_canfd=False,
+                 send_canfd=False, catch_transfer_errors=True,
                  **_extras):
         """
         It is recommended to use make_node() rather than instantiating this type directly.
@@ -258,10 +259,17 @@ class Node(Scheduler):
                                          handlers will be caught and logged. If
                                          False, spin() will raise exceptions
                                          raised from callbacks.
+        :param catch_transfer_errors: If true, received transfers that can't be decoded (unknown data type,
+                                      payload or framing errors) are dropped and logged. If False, spin()
+                                      raises TransferError for them.
         """
         super(Node, self).__init__()
 
         self._handler_dispatcher = HandlerDispatcher(self, catch_handler_exceptions)
+
+        self._catch_transfer_errors = catch_transfer_errors
+        self._transfer_error_last_log = None
+        self._transfer_errors_suppressed = 0
 
         self._can_driver = can_driver
         self._node_id = node_id
@@ -330,7 +338,14 @@ class Node(Scheduler):
             return
 
         transfer = transport.Transfer()
-        transfer.from_frames(transfer_frames)
+        try:
+            transfer.from_frames(transfer_frames)
+        except transport.TransferError as ex:
+            # Raising here would abandon the rest of the RX queue and skip the scheduler poll in spin()
+            if not self._catch_transfer_errors:
+                raise
+            self._log_transfer_error(frame, ex)
+            return
 
         self._transfer_hook_dispatcher.call_hooks(self._transfer_hook_dispatcher.TRANSFER_DIRECTION_INCOMING, transfer)
 
@@ -351,6 +366,23 @@ class Node(Scheduler):
             transfer.dest_node_id == self._node_id:
             # This is a request or a broadcast; look up the appropriate handler by data type ID
             self._handler_dispatcher.call_handlers(transfer)
+
+    def _log_transfer_error(self, frame, ex):
+        # A node broadcasting a type we have no DSDL for fails on every transfer, possibly hundreds per second
+        now = time.monotonic()
+        if self._transfer_error_last_log is not None and \
+                now - self._transfer_error_last_log < TRANSFER_ERROR_LOG_INTERVAL:
+            self._transfer_errors_suppressed += 1
+            return
+
+        if self._transfer_errors_suppressed:
+            logger.warning('Dropped transfer from node %d: %s (%d more dropped in the last %.0f s)',
+                           frame.message_id & 0x7F, ex, self._transfer_errors_suppressed,
+                           now - self._transfer_error_last_log)
+        else:
+            logger.warning('Dropped transfer from node %d: %s', frame.message_id & 0x7F, ex)
+        self._transfer_error_last_log = now
+        self._transfer_errors_suppressed = 0
 
     def _next_transfer_id(self, key):
         transfer_id = self._next_transfer_ids[key]

@@ -83,6 +83,67 @@ class HandlerExceptionHandling(unittest.TestCase):
         mock_cb.assert_any_call(ANY)
 
 
+class TransferErrorHandling(unittest.TestCase):
+    UNKNOWN_DTID = 20999
+
+    def setUp(self):
+        dronecan.load_dsdl()
+        self.assertNotIn((self.UNKNOWN_DTID, dronecan.dsdl.CompoundType.KIND_MESSAGE), dronecan.DATATYPES)
+
+        msg = dronecan.uavcan.protocol.debug.KeyValue()
+        msg.key = 'foo'
+        msg.value = 42
+        transfer = transport.Transfer(
+            payload=msg,
+            source_node_id=42,
+            transfer_id=10,
+            transfer_priority=DEFAULT_TRANSFER_PRIORITY,
+            service_not_message=False)
+        self.good_frames = [
+            CANFrame(can_id=f.message_id, data=f.bytes, extended=True)
+            for f in transfer.to_frames()
+        ]
+        self.driver = Mock()
+
+    def _single_frame(self, dtid, payload, transfer_id=0):
+        can_id = (DEFAULT_TRANSFER_PRIORITY << 24) | (dtid << 8) | 42
+        return CANFrame(can_id=can_id, data=bytearray(payload) + bytearray([0xC0 | transfer_id]), extended=True)
+
+    def test_unknown_data_type_is_dropped(self):
+        frames = [self._single_frame(self.UNKNOWN_DTID, b'\x01\x02\x03')] + self.good_frames
+        self.driver.receive.side_effect = frames + [None]
+        mock_cb = Mock(return_value=None)
+        node = Node(self.driver)
+        node.add_handler(dronecan.uavcan.protocol.debug.KeyValue, mock_cb)
+
+        with self.assertLogs('dronecan.node', 'WARNING'):
+            self.assertEqual(node.spin(0), len(frames))
+        mock_cb.assert_called_once_with(ANY)
+
+    def test_unknown_data_type_raises_when_not_caught(self):
+        self.driver.receive.side_effect = [self._single_frame(self.UNKNOWN_DTID, b'\x01\x02\x03'), None]
+        node = Node(self.driver, catch_transfer_errors=False)
+
+        with self.assertRaises(transport.TransferError):
+            node.spin(0)
+
+    def test_short_payload_raises_transfer_error(self):
+        dtid = dronecan.uavcan.protocol.NodeStatus.default_dtid
+        self.driver.receive.side_effect = [self._single_frame(dtid, b'\x01\x02'), None]
+        node = Node(self.driver, catch_transfer_errors=False)
+
+        with self.assertRaises(transport.TransferError):
+            node.spin(0)
+
+    def test_repeated_errors_are_rate_limited(self):
+        frames = [self._single_frame(self.UNKNOWN_DTID, b'\x01', tid) for tid in range(5)]
+        self.driver.receive.side_effect = frames + [None]
+        node = Node(self.driver)
+
+        with self.assertLogs('dronecan.node', 'WARNING') as logs:
+            node.spin(0)
+        self.assertEqual(len(logs.records), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
